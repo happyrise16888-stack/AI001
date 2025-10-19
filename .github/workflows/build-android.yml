@@ -2,98 +2,68 @@ name: Build LibreOffice Android (CI)
 
 on:
   workflow_dispatch:
-    inputs:
-      target_abi:
-        description: 'Android ABI (armeabi-v7a|arm64-v8a|x86|x86_64)'
-        required: true
-        default: 'arm64-v8a'
-      build_type:
-        description: 'Build type (Debug|Release)'
-        required: true
-        default: 'Debug'
 
 jobs:
   build-android:
     runs-on: ubuntu-latest
-    timeout-minutes: 360 # LibreOffice 可能很慢，按需调整；自托管更佳
+    timeout-minutes: 360
+
     steps:
-      - name: Checkout repo
+      - name: Checkout source
         uses: actions/checkout@v4
         with:
-          repository: LibreOffice/core
-          fetch-depth: 0
+          submodules: recursive
 
       - name: Install basic deps
         run: |
           sudo apt-get update
-          sudo apt-get install -y git build-essential autoconf automake \
-            python3 python3-pip default-jdk unzip wget pkg-config \
-            libgtk-3-dev libx11-dev libxext-dev libxrender-dev \
-            libxrandr-dev libpng-dev libjpeg-dev libexpat1-dev \
-            libfontconfig1-dev libfreetype6-dev libglib2.0-dev \
-            cmake ninja
+          sudo apt-get install -y \
+            git build-essential ninja-build python3 python3-pip openjdk-17-jdk \
+            pkg-config autoconf automake libtool zip unzip curl wget \
+            libgl1-mesa-dev libx11-dev libxi-dev libxext-dev libxrender-dev
 
-      - name: Setup Android SDK & NDK (cmdline tools)
-        env:
-          ANDROID_SDK_ROOT: ${{ runner.temp }}/android-sdk
+      - name: Setup Android SDK & NDK
         run: |
-          mkdir -p "${ANDROID_SDK_ROOT}"
-          cd "${ANDROID_SDK_ROOT}"
-          wget -q https://dl.google.com/android/repository/commandlinetools-linux-10406996_latest.zip -O sdk.zip
-          unzip -q sdk.zip -d cmdline-tools
+          mkdir -p $HOME/android-sdk
+          cd $HOME/android-sdk
+          curl -fsSLO https://dl.google.com/android/repository/commandlinetools-linux-9477386_latest.zip
+          unzip -q commandlinetools-linux-9477386_latest.zip
           mkdir -p cmdline-tools/latest
           mv cmdline-tools/* cmdline-tools/latest/ || true
-          yes | "${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager" --sdk_root="${ANDROID_SDK_ROOT}" "platform-tools" "platforms;android-33" "ndk;25.2.9519653"
+          yes | ./cmdline-tools/latest/bin/sdkmanager --sdk_root=$HOME/android-sdk --licenses
+          yes | ./cmdline-tools/latest/bin/sdkmanager --sdk_root=$HOME/android-sdk \
+            "platform-tools" "platforms;android-34" "build-tools;34.0.0" "ndk;25.2.9519653"
 
-      - name: Set env for Android
+      - name: Set environment vars
         run: |
-          echo "ANDROID_SDK_ROOT=${{ runner.temp }}/android-sdk" >> $GITHUB_ENV
-          echo "ANDROID_HOME=${{ runner.temp }}/android-sdk" >> $GITHUB_ENV
-          echo "JAVA_HOME=/usr/lib/jvm/default-java" >> $GITHUB_ENV
+          echo "ANDROID_SDK_ROOT=$HOME/android-sdk" >> $GITHUB_ENV
+          echo "ANDROID_HOME=$HOME/android-sdk" >> $GITHUB_ENV
+          echo "ANDROID_NDK_HOME=$HOME/android-sdk/ndk/25.2.9519653" >> $GITHUB_ENV
+          echo "JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64" >> $GITHUB_ENV
 
-      - name: Create autogen.input (basic) for Android
+      - name: Build LibreOffice for Android
         working-directory: ${{ github.workspace }}
-        run: |
-          cat > autogen.input <<'EOF'
-          --disable-krb5
-          --enable-Android
-          --with-jdk-home=/usr/lib/jvm/default-java
-          --without-system-libpng
-          --without-system-libjpeg
-          EOF
-          git status --porcelain || true
-
-      - name: Configure (autogen)
-        working-directory: ${{ github.workspace }}
-        run: |
-          chmod +x ./autogen.sh || true
-          ./autogen.sh --without-java --enable-android --enable-dbgutil || true
-
-      - name: Build (attempt) Android
-        working-directory: ${{ github.workspace }}/android
         env:
-          ANDROID_NDK_HOME: ${{ runner.temp }}/android-sdk/ndk/25.2.9519653
+          ANDROID_SDK_ROOT: ${{ env.ANDROID_SDK_ROOT }}
+          ANDROID_HOME: ${{ env.ANDROID_HOME }}
+          ANDROID_NDK_HOME: ${{ env.ANDROID_NDK_HOME }}
+          JAVA_HOME: ${{ env.JAVA_HOME }}
         run: |
-          # If android/README.cross or gradle wrapper exists, use it
+          echo "=== Starting LibreOffice Android build ==="
+          if [ -d "android" ]; then
+            cd android
+          fi
           if [ -f "./gradlew" ]; then
-            ./gradlew assemble${{ github.event.inputs.build_type }} || true
+            chmod +x ./gradlew
+            ./gradlew assembleDebug --stacktrace || true
           else
-            # fallback: try top-level make for android target (may be slow)
-            cd $GITHUB_WORKSPACE || true
+            echo "gradlew not found, using fallback make"
             make -C android || true
           fi
 
-      - name: Collect artifacts
+      - name: Archive build outputs
+        if: success()
         run: |
-          mkdir -p /tmp/lo_out
-          # try common output paths
-          cp -r android/app/build/outputs /tmp/lo_out 2>/dev/null || true
-          cp -r android/aar/* /tmp/lo_out 2>/dev/null || true
-          find . -name "*.so" -maxdepth 6 -print 2>/dev/null | xargs -I{} cp --parents {} /tmp/lo_out 2>/dev/null || true
-          ls -la /tmp/lo_out || true
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: libreoffice-android-build-${{ github.event.inputs.target_abi }}-${{ github.run_number }}
-          path: /tmp/lo_out
+          mkdir -p artifacts
+          find . -type f -name "*.apk" -exec cp {} artifacts/ \; || true
+          find . -type f -name "*.aab" -exec cp {} artifacts/ \; || true
