@@ -1,0 +1,57 @@
+name: Build LibreOffice Windows (CI)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    timeout-minutes: 360
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          repository: LibreOffice/core
+          fetch-depth: 0
+
+      - name: Setup python and deps
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Install required chocolatey packages (minimal)
+        run: |
+          choco feature enable -n allowGlobalConfirmation
+          choco install -y git make mingw msys2 visualstudio2019buildtools
+
+      - name: Print environment info
+        run: |
+          echo PATH=%PATH%
+          git --version
+          python --version
+          where cl || true
+
+      - name: Use LODE scripts if present
+        run: |
+          if (Test-Path .\lode.bat) {
+            echo "Found LODE helper, attempting LODE build..."
+            ./lode.bat build || echo "LODE build failed"
+          } else {
+            echo "LODE not found. Attempting configure + make using MSYS / Cygwin style (may fail on actions runner)."
+            bash -lc "chmod +x autogen.sh || true; ./autogen.sh || true; make || true"
+          }
+
+      - name: Collect artifacts
+        run: |
+          mkdir artifacts || true
+          # copy likely output dirs (adjust if necessary)
+          if (Test-Path .\instdir) {
+            robocopy instdir artifacts /E || true
+          }
+          Get-ChildItem -Path . -Include *.exe,*.dll -Recurse | ForEach-Object { Copy-Item -Path $_.FullName -Destination artifacts -Force }
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: libreoffice-windows-build-${{ github.run_number }}
+          path: artifacts
