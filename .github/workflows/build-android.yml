@@ -14,6 +14,7 @@ jobs:
         with:
           submodules: recursive
 
+      # ✅ 修正 ninja 包名为 ninja-build
       - name: Install basic deps
         run: |
           sudo apt-get update
@@ -67,3 +68,10 @@ jobs:
           mkdir -p artifacts
           find . -type f -name "*.apk" -exec cp {} artifacts/ \; || true
           find . -type f -name "*.aab" -exec cp {} artifacts/ \; || true
+          find . -type f -name "*.so" -exec cp {} artifacts/ \; || true
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: libreoffice-android-build
+          path: artifacts/
